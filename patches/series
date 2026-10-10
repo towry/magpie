@@ -1,0 +1,3 @@
+# Apply order. One filename per line.
+# Blank lines and # comments are skipped.
+# Add deploy-only git diffs here, e.g. 0001-example.patch

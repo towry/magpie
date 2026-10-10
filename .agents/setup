@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Amp Orb setup for the towry/magpie deploy (patch-only) branch.
+# Non-interactive and idempotent. Do not start long-lived processes here.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+step_started=$SECONDS
+finish_step() {
+  echo "[orb-setup] $1 complete ($((SECONDS - step_started))s)"
+  step_started=$SECONDS
+}
+
+echo "[orb-setup] Installing missing system packages"
+system_packages=(
+  build-essential
+  ca-certificates
+  curl
+  git
+)
+missing_packages=()
+for package in "${system_packages[@]}"; do
+  dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -Fqx 'ii ' ||
+    missing_packages+=("$package")
+done
+if ((${#missing_packages[@]})); then
+  sudo apt-get -o DPkg::Lock::Timeout=120 update -qq
+  sudo DEBIAN_FRONTEND=noninteractive apt-get \
+    -o DPkg::Lock::Timeout=120 \
+    install -y --no-install-recommends \
+    "${missing_packages[@]}"
+fi
+finish_step "System packages"
+
+echo "[orb-setup] Ensuring canonical magpie source tree"
+# Read-only sibling worktree of this fork's origin/main.
+# Never clone yetone/magpie as the apply baseline. Never commit or push in this tree.
+source_dir="$(cd "$repo_root/.." && pwd)/magpie-main"
+if [ -d "$source_dir/.git" ] || [ -f "$source_dir/.git" ]; then
+  echo "[orb-setup] Reusing existing $source_dir"
+elif [ ! -e "$source_dir" ]; then
+  git -C "$repo_root" fetch origin main --depth 1
+  git -C "$repo_root" worktree add --detach "$source_dir" origin/main
+else
+  echo "[orb-setup] $source_dir exists but is not a git checkout; leaving it"
+fi
+finish_step "magpie source tree"
+
+amp_config_dir="$HOME/.config/amp"
+mkdir -p "$amp_config_dir"
+orb_guidance_marker="# magpie deploy orb guidance"
+if ! grep -Fqx "$orb_guidance_marker" "$amp_config_dir/AGENTS.md" 2>/dev/null; then
+  cat >> "$amp_config_dir/AGENTS.md" <<'EOF'
+
+# magpie deploy orb guidance
+
+- Default checkout is the `deploy` patch-only branch. Do not edit magpie source here.
+- Canonical read-only source tree: `../magpie-main` (this repo's `origin/main` worktree).
+- Never clone or use `yetone/magpie` / `../magpie-upstream` as the patch baseline.
+- Put deploy-ready patches in `./patches` and update `./patches/series`.
+- Do not commit or push in `../magpie-main`.
+- Do not write or run unit tests; syntax-check patched Go files in the source tree.
+- Use tmux session `dev` for interactive background work.
+EOF
+fi
+finish_step "Orb agent guidance"
+
+echo "[orb-setup] Complete"
