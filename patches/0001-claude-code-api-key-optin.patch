@@ -1,6 +1,6 @@
 diff --git a/internal/gateway/claude_api_key_test.go b/internal/gateway/claude_api_key_test.go
 new file mode 100644
-index 00000000..27c02ca7
+index 00000000..4fb4eba3
 --- /dev/null
 +++ b/internal/gateway/claude_api_key_test.go
 @@ -0,0 +1,181 @@
@@ -145,7 +145,7 @@ index 00000000..27c02ca7
 +	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 +	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 +	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-+	if err := settings.Save(settings.Settings{ModelWires: map[string]string{"packy-cc/claude-haiku-5-5": "claude-haiku-5-5"}}); err != nil {
++	if err := settings.Save(settings.Settings{ModelWires: map[string]string{"packy-cc/claude-haiku-5-5": "claude-haiku-4-5"}}); err != nil {
 +		t.Fatal(err)
 +	}
 +	p := provider.Provider{ID: "packy-cc", Name: "Packy", Key: "sk-test", Anthropic: "https://cf.api.fan", ClaudeCode: true, Models: []string{"claude-haiku-5-5"}}
@@ -156,7 +156,7 @@ index 00000000..27c02ca7
 +	t.Cleanup(s.subscription.abortAll)
 +	body := `{"model":"packy-cc/claude-haiku-5-5","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`
 +	code, reply := sendTo(s, "/v1/messages", body)
-+	if code != 200 || !strings.Contains(reply, "model claude-haiku-5-5") {
++	if code != 200 || !strings.Contains(reply, "model claude-haiku-4-5") {
 +		t.Fatalf("wire model: %d %s", code, reply)
 +	}
 +}

@@ -122,7 +122,7 @@ jobs:
             echo
             echo "This is not an official yetone/magpie release."
           } > "$notes"
-          args=(release create "$TAG" dist/magpie-cli-linux-amd64 dist/magpie-cli-linux-arm64 dist/SHA256SUMS dist/VERSION dist/BUILDINFO --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file "$notes")
+          args=(release create "$TAG" dist/magpie-cli-linux-amd64 dist/magpie-cli-linux-arm64 dist/SHA256SUMS dist/VERSION dist/BUILDINFO --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file "$notes" --target "$PATCH_SHA")
           if [[ "$DRAFT" == "true" ]]; then
             args+=(--draft)
           fi
