@@ -1,0 +1,129 @@
+name: Release Linux CLI
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.1153-packy.1). Leave empty to skip creating a GitHub Release."
+        required: false
+        type: string
+      draft:
+        description: "Create the GitHub Release as a draft"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-linux
+  cancel-in-progress: false
+
+jobs:
+  release-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout patch branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pin origin/main SHA
+        id: base
+        run: |
+          git fetch origin main
+          MAIN_SHA=$(git rev-parse origin/main)
+          PATCH_SHA=$(git rev-parse HEAD)
+          echo "main_sha=$MAIN_SHA" >> "$GITHUB_OUTPUT"
+          echo "patch_sha=$PATCH_SHA" >> "$GITHUB_OUTPUT"
+          echo "Pinned origin/main=$MAIN_SHA patch=$PATCH_SHA"
+
+      - name: Reset worktree to pinned main
+        run: |
+          git checkout --detach "${{ steps.base.outputs.main_sha }}"
+
+      - name: Restore patch files from patch branch
+        run: |
+          git restore --source "${{ steps.base.outputs.patch_sha }}" -- patches scripts .github/workflows/check-patches.yml .github/workflows/release-linux.yml
+
+      - name: Apply patches in order
+        run: |
+          bash scripts/apply.sh \
+            --repo-root "$PWD" \
+            --patches-dir "$PWD/patches"
+
+      - name: Read Go version
+        id: gover
+        run: |
+          GO_VERSION=$(sed -n 's/^go //p' go.mod | head -1)
+          echo "version=$GO_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.gover.outputs.version }}
+
+      - name: Build linux CLI
+        env:
+          MAIN_SHA: ${{ steps.base.outputs.main_sha }}
+          PATCH_SHA: ${{ steps.base.outputs.patch_sha }}
+        run: |
+          set -euo pipefail
+          SHORT_MAIN=${MAIN_SHA:0:12}
+          SHORT_PATCH=${PATCH_SHA:0:12}
+          VERSION="fork-${SHORT_MAIN}+patch.${SHORT_PATCH}"
+          mkdir -p dist
+          echo "$VERSION" > dist/VERSION
+          {
+            echo "version=$VERSION"
+            echo "source_sha=$MAIN_SHA"
+            echo "patch_sha=$PATCH_SHA"
+            echo "go=$(go version)"
+          } > dist/BUILDINFO
+          for arch in amd64 arm64; do
+            echo "building linux/$arch"
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -tags nogui -trimpath \
+              -ldflags="-s -w -X main.version=$VERSION" \
+              -o "dist/magpie-cli-linux-$arch" .
+          done
+          (cd dist && sha256sum magpie-cli-linux-amd64 magpie-cli-linux-arm64 VERSION BUILDINFO > SHA256SUMS)
+          cat dist/BUILDINFO
+          cat dist/SHA256SUMS
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: magpie-cli-linux
+          path: |
+            dist/magpie-cli-linux-amd64
+            dist/magpie-cli-linux-arm64
+            dist/SHA256SUMS
+            dist/VERSION
+            dist/BUILDINFO
+
+      - name: Create GitHub Release
+        if: ${{ inputs.tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          DRAFT: ${{ inputs.draft }}
+          MAIN_SHA: ${{ steps.base.outputs.main_sha }}
+          PATCH_SHA: ${{ steps.base.outputs.patch_sha }}
+        run: |
+          set -euo pipefail
+          notes=$(mktemp)
+          {
+            echo "towry/magpie Linux CLI (patched fork)"
+            echo
+            echo "- source (origin/main): \`$MAIN_SHA\`"
+            echo "- patches (deploy): \`$PATCH_SHA\`"
+            echo "- go: \`$(go version)\`"
+            echo
+            echo "This is not an official yetone/magpie release."
+          } > "$notes"
+          args=(release create "$TAG" dist/magpie-cli-linux-amd64 dist/magpie-cli-linux-arm64 dist/SHA256SUMS dist/VERSION dist/BUILDINFO --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file "$notes")
+          if [[ "$DRAFT" == "true" ]]; then
+            args+=(--draft)
+          fi
+          gh "${args[@]}"

@@ -1,0 +1,428 @@
+diff --git a/internal/gateway/claude_api_key_test.go b/internal/gateway/claude_api_key_test.go
+new file mode 100644
+index 00000000..27c02ca7
+--- /dev/null
++++ b/internal/gateway/claude_api_key_test.go
+@@ -0,0 +1,181 @@
++package gateway
++
++import (
++	"encoding/json"
++	"os"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"testing"
++
++	"github.com/yetone/magpie/internal/appdir"
++	"github.com/yetone/magpie/internal/provider"
++	"github.com/yetone/magpie/internal/settings"
++	"github.com/yetone/magpie/internal/testenv"
++)
++
++func TestClaudeAPIKeyOwnerIsNotASubscriptionUser(t *testing.T) {
++	p := provider.Provider{ID: "packy-cc", Key: "sk-test"}
++	owner := claudeAPIKeyOwner(p)
++	if strings.Contains(owner, "\x00") {
++		t.Fatalf("owner %q looks like a subscription account", owner)
++	}
++	if user, own := ownerAccount(owner); user != "" || own {
++		t.Fatalf("ownerAccount(%q) = %q %v", owner, user, own)
++	}
++	other := claudeAPIKeyOwner(provider.Provider{ID: "packy-cc", Key: "sk-other"})
++	if owner == other {
++		t.Fatal("different keys must not share a Claude Code process")
++	}
++	moved := claudeAPIKeyOwner(provider.Provider{ID: "packy-cc", Key: "sk-test", Anthropic: "https://other.example"})
++	if owner == moved {
++		t.Fatal("different endpoints must not share a Claude Code process")
++	}
++}
++
++func TestClaudeAPIKeyEnvNeedsKeyAndEndpoint(t *testing.T) {
++	_, err := claudeAPIKeyEnv(provider.Provider{ID: "packy-cc", Anthropic: "https://cf.api.fan"})
++	if err == nil || !strings.Contains(err.Error(), "API key") {
++		t.Fatalf("missing key: %v", err)
++	}
++	_, err = claudeAPIKeyEnv(provider.Provider{ID: "packy-cc", Key: "sk-test"})
++	if err == nil || !strings.Contains(err.Error(), "base URL") {
++		t.Fatalf("missing endpoint: %v", err)
++	}
++	env, err := claudeAPIKeyEnv(provider.Provider{ID: "packy-cc", Key: "sk-test", Anthropic: "https://cf.api.fan"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	joined := strings.Join(env, "\n")
++	if !strings.Contains(joined, "ANTHROPIC_BASE_URL=https://cf.api.fan") || !strings.Contains(joined, "ANTHROPIC_API_KEY=sk-test") {
++		t.Fatalf("env %q", joined)
++	}
++	cleaned := strings.Join(cleanClaudeEnv([]string{"ANTHROPIC_BASE_URL=http://127.0.0.1:1", "ANTHROPIC_API_KEY=from-server", "PATH=/bin"}), "\n")
++	if strings.Contains(cleaned, "ANTHROPIC_BASE_URL=") || strings.Contains(cleaned, "ANTHROPIC_API_KEY=") {
++		t.Fatalf("cleanClaudeEnv kept server overrides: %q", cleaned)
++	}
++	after := append(cleanClaudeEnv([]string{"PATH=/bin"}), env...)
++	got := strings.Join(after, "\n")
++	if !strings.Contains(got, "ANTHROPIC_BASE_URL=https://cf.api.fan") || !strings.Contains(got, "ANTHROPIC_API_KEY=sk-test") {
++		t.Fatalf("opt-in env lost after clean: %q", got)
++	}
++}
++
++func TestClaudeAPIKeyConfigDirIsPrivate(t *testing.T) {
++	p := provider.Provider{ID: "packy-cc", Key: "sk-test"}
++	dir, err := claudeAPIKeyConfigDir(p)
++	if err != nil {
++		t.Fatal(err)
++	}
++	want := filepath.Join(appdir.Cache(), "claude-code", claudeAPIKeyOwner(p))
++	if dir != want {
++		t.Fatalf("dir %q, want %q", dir, want)
++	}
++	if strings.Contains(dir, filepath.Join(os.Getenv("HOME"), ".claude")) {
++		t.Fatalf("must not use the user's Claude config: %q", dir)
++	}
++}
++
++func TestClaudeAPIKeyMissingCLIDoesNotFallBack(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("a shell script stands in for Claude Code")
++	}
++	empty := t.TempDir()
++	t.Setenv("PATH", empty)
++	t.Setenv("HOME", empty)
++	t.Setenv("USERPROFILE", empty)
++	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++	t.Setenv("XDG_CACHE_HOME", t.TempDir())
++	p := provider.Provider{ID: "packy-cc", Name: "Packy", Key: "sk-test", Anthropic: "https://cf.api.fan", ClaudeCode: true, Models: []string{"claude-haiku-5-5"}}
++	if err := provider.Save(p); err != nil {
++		t.Fatal(err)
++	}
++	body := `{"model":"packy-cc/claude-haiku-5-5","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`
++	code, reply := post(t, "/v1/messages", body)
++	if code != 502 || !strings.Contains(reply, "Claude Code is not installed") {
++		t.Fatalf("missing CLI: %d %s", code, reply)
++	}
++	if strings.Contains(reply, "auth login") {
++		t.Fatalf("must not hint at a subscription login: %s", reply)
++	}
++}
++
++func TestClaudeAPIKeyServesThroughClaudeCode(t *testing.T) {
++	fakeClaude(t)
++	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++	t.Setenv("XDG_CACHE_HOME", t.TempDir())
++	p := provider.Provider{ID: "packy-cc", Name: "Packy", Key: "sk-test", Anthropic: "https://cf.api.fan", ClaudeCode: true, Models: []string{"claude-haiku-5-5"}}
++	if err := provider.Save(p); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	t.Cleanup(s.subscription.abortAll)
++	body := `{"model":"packy-cc/claude-haiku-5-5","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`
++	code, reply := sendTo(s, "/v1/messages", body)
++	if code != 200 || !strings.Contains(reply, "pid ") {
++		t.Fatalf("opt-in reply: %d %s", code, reply)
++	}
++}
++
++func TestClaudeAPIKeyUsesWireModel(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("a shell script stands in for Claude Code")
++	}
++	dir := t.TempDir()
++	script := `#!/bin/sh
++model=""
++for a in "$@"; do
++  if [ "$prev" = "--model" ]; then model="$a"; fi
++  prev="$a"
++done
++read -r line
++echo "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"model\":\"$model\",\"usage\":{\"input_tokens\":1}}}}"
++echo "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"model $model\"}}}"
++echo '{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}}'
++echo '{"type":"stream_event","event":{"type":"message_stop"}}'
++echo '{"type":"result","subtype":"success","is_error":false,"result":""}'
++`
++	testenv.Program(t, filepath.Join(dir, "claude"), script)
++	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
++	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++	t.Setenv("XDG_CACHE_HOME", t.TempDir())
++	if err := settings.Save(settings.Settings{ModelWires: map[string]string{"packy-cc/claude-haiku-5-5": "claude-haiku-5-5"}}); err != nil {
++		t.Fatal(err)
++	}
++	p := provider.Provider{ID: "packy-cc", Name: "Packy", Key: "sk-test", Anthropic: "https://cf.api.fan", ClaudeCode: true, Models: []string{"claude-haiku-5-5"}}
++	if err := provider.Save(p); err != nil {
++		t.Fatal(err)
++	}
++	s := New()
++	t.Cleanup(s.subscription.abortAll)
++	body := `{"model":"packy-cc/claude-haiku-5-5","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`
++	code, reply := sendTo(s, "/v1/messages", body)
++	if code != 200 || !strings.Contains(reply, "model claude-haiku-5-5") {
++		t.Fatalf("wire model: %d %s", code, reply)
++	}
++}
++
++func TestClaudeAPIKeyCountTokensIsLocal(t *testing.T) {
++	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++	t.Setenv("XDG_CACHE_HOME", t.TempDir())
++	p := provider.Provider{ID: "packy-cc", Name: "Packy", Key: "sk-test", Anthropic: "https://example.invalid", ClaudeCode: true, Models: []string{"claude-haiku-5-5"}}
++	if err := provider.Save(p); err != nil {
++		t.Fatal(err)
++	}
++	code, body := post(t, "/v1/messages/count_tokens", `{"model":"packy-cc/claude-haiku-5-5","messages":[{"role":"user","content":"hi there"}]}`)
++	var got struct {
++		Tokens int `json:"input_tokens"`
++	}
++	if err := json.Unmarshal([]byte(body), &got); err != nil || code != 200 || got.Tokens <= 0 {
++		t.Fatalf("local count: %d %s (decode: %v)", code, body, err)
++	}
++}
++
++func TestHTTPProviderStillGoesHTTP(t *testing.T) {
++	f := &fake{ctype: "application/json", reply: `{"id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"http"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`}
++	setup(t, provider.Anthropic, f)
++	code, body := post(t, "/v1/messages", `{"model":"fake/m1","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`)
++	if code != 200 || !strings.Contains(body, "http") || f.calls == 0 {
++		t.Fatalf("ordinary HTTP: %d %s calls=%d", code, body, f.calls)
++	}
++}
+diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
+index d3649601..c13c45ef 100644
+--- a/internal/gateway/claude_subscription.go
++++ b/internal/gateway/claude_subscription.go
+@@ -438,6 +438,16 @@ func claudeBinary() (claudeCLI, error) {
+ 	return claudeCLI{}, errors.New("Claude Code is not installed; install it and run `claude auth login`")
+ }
+ 
++func claudeAPIKeyBinary() (claudeCLI, error) {
++	if p := proc.FindTool("claude"); p != "" {
++		return claudeCLI{path: p}, nil
++	}
++	if t, ok := wslrun.Find("claude"); ok {
++		return claudeCLI{wsl: &t}, nil
++	}
++	return claudeCLI{}, errors.New("Claude Code is not installed")
++}
++
+ func (c claudeCLI) command(ctx context.Context, args ...string) *exec.Cmd {
+ 	if c.wsl != nil {
+ 		return c.wsl.Command(ctx, args...)
+@@ -448,7 +458,8 @@ func (c claudeCLI) command(ctx context.Context, args ...string) *exec.Cmd {
+ // claudeEnvVars are the variables magpie sets for a Claude Code run, which
+ // one in WSL is handed (wslrun's Env).
+ var claudeEnvVars = []string{"ENABLE_CLAUDEAI_MCP_SERVERS", "DISABLE_AUTO_COMPACT", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+-	"DISABLE_TELEMETRY", "DISABLE_ERROR_REPORTING", "DISABLE_AUTOUPDATER", "ANTHROPIC_BETAS"}
++	"DISABLE_TELEMETRY", "DISABLE_ERROR_REPORTING", "DISABLE_AUTOUPDATER", "ANTHROPIC_BETAS",
++	"ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"}
+ 
+ // env is env for a run in config directory configDir ("" for the account
+ // Claude Code is signed in to): for one in WSL, what of it goes in.
+@@ -492,17 +503,25 @@ func callbackBaseURL() string {
+ // reads its input, and the turn was answered 502 "Claude Code ended"
+ // (FrierenF on Discord).
+ func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, configDir, owner string, from *savedSession) (*subscriptionRun, <-chan Event, error) {
+-	run, events, err := b.startRun(ctx, req, model, configDir, owner, from)
++	return b.startWith(ctx, req, model, configDir, owner, from, nil)
++}
++
++func (b *subscriptionBridge) startWith(ctx context.Context, req *Request, model, configDir, owner string, from *savedSession, extraEnv []string) (*subscriptionRun, <-chan Event, error) {
++	run, events, err := b.startRun(ctx, req, model, configDir, owner, from, extraEnv)
+ 	if err != nil && from != nil {
+ 		log.Printf("claude: Claude Code could not go on from the conversation's saved session (%v); a new one is told the whole conversation", err)
+-		return b.startRun(ctx, req, model, configDir, owner, nil)
++		return b.startRun(ctx, req, model, configDir, owner, nil, extraEnv)
+ 	}
+ 	return run, events, err
+ }
+ 
+ // startRun is start's Claude Code, from the saved session from when set.
+-func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, configDir, owner string, from *savedSession) (*subscriptionRun, <-chan Event, error) {
+-	binary, err := claudeBinary()
++func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, configDir, owner string, from *savedSession, extraEnv []string) (*subscriptionRun, <-chan Event, error) {
++	find := claudeBinary
++	if extraEnv != nil {
++		find = claudeAPIKeyBinary
++	}
++	binary, err := find()
+ 	if err != nil {
+ 		return nil, nil, err
+ 	}
+@@ -589,6 +608,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model,
+ 	if len(req.Safeguards) > 0 {
+ 		env = append(env, "ANTHROPIC_BETAS="+req.SafeguardBeta)
+ 	}
++	env = append(env, extraEnv...)
+ 	cmd.Env = binary.env(env, configDir)
+ 	stdin, err := cmd.StdinPipe()
+ 	if err != nil {
+@@ -3166,6 +3186,72 @@ func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request,
+ 	return s.serveSubscription(w, r, from, "Claude Code", model, owner, body, usage, start)
+ }
+ 
++// claudeAPIKeyOwner is a run owner that ownerAccount will not take as a
++// subscription user: no NUL, so the second field is empty.
++func claudeAPIKeyOwner(p provider.Provider) string {
++	id := provider.KeyID(p.Key)
++	if id == "" {
++		id = "nokey"
++	}
++	ep := provider.KeyID(strings.TrimSpace(p.Anthropic))
++	if ep == "" {
++		ep = "noep"
++	}
++	return p.ID + "#key#" + id + "#ep#" + ep
++}
++
++func claudeAPIKeyConfigDir(p provider.Provider) (string, error) {
++	dir := filepath.Join(appdir.Cache(), "claude-code", claudeAPIKeyOwner(p))
++	if err := os.MkdirAll(dir, 0o700); err != nil {
++		return "", err
++	}
++	return dir, nil
++}
++
++func claudeAPIKeyEnv(p provider.Provider) ([]string, error) {
++	key := strings.TrimSpace(p.Key)
++	if key == "" {
++		return nil, errors.New("Claude Code needs an API key")
++	}
++	base := strings.TrimSpace(p.Anthropic)
++	if base == "" {
++		return nil, errors.New("Claude Code needs an Anthropic base URL")
++	}
++	return []string{"ANTHROPIC_BASE_URL=" + base, "ANTHROPIC_API_KEY=" + key}, nil
++}
++
++func (s *Server) serveClaudeAPIKey(w http.ResponseWriter, r *http.Request, from provider.Protocol, p provider.Provider, model string, body []byte, usage *Usage) (int, string) {
++	owner := claudeAPIKeyOwner(p)
++	wire := provider.UpstreamNameIn(wiresOf(r.Context()), p.ID, model)
++	start := func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error) {
++		ctx = p.Via(ctx)
++		if run, events := s.subscription.resume(req, owner); run != nil {
++			return run, events, nil
++		}
++		from := s.subscription.unshelve(req, owner)
++		s.subscription.retire(owner, req.Messages)
++		if req.Effort == "" && autoModeClassifier(req) {
++			req.Effort = "low"
++		}
++		extra, err := claudeAPIKeyEnv(p)
++		if err != nil {
++			if from != nil {
++				from.discard()
++			}
++			return nil, nil, err
++		}
++		dir, err := claudeAPIKeyConfigDir(p)
++		if err != nil {
++			if from != nil {
++				from.discard()
++			}
++			return nil, nil, err
++		}
++		return s.subscription.startWith(ctx, req, wire, dir, owner, from, extra)
++	}
++	return s.serveSubscription(w, r, from, "Claude Code", model, owner, body, usage, start)
++}
++
+ // limitHeaders says on a reply what is kept of the allowance of the account
+ // a run's owner names, as Anthropic says it to Claude Code: its
+ // anthropic-ratelimit-unified-* headers, which a Claude Code signed in to
+diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
+index 5ab969ac..9ea998f6 100644
+--- a/internal/gateway/gateway.go
++++ b/internal/gateway/gateway.go
+@@ -982,7 +982,10 @@ func (s *Server) countOn(w http.ResponseWriter, r *http.Request, p provider.Prov
+ 		// with an error every time: one more request its firewall weighs
+ 		p.Account.Agent == "zcode") ||
+ 		ok && p.Account != nil && p.Account.Agent == provider.CommandCodePlanID && cmdGoing(r.Context(), p) ||
+-		ok && p.IsPlugin() && (slices.Contains(estimatedMoved, p.ID) || slices.Contains(estimatedMoved, p.PluginProvider())) {
++		ok && p.IsPlugin() && (slices.Contains(estimatedMoved, p.ID) || slices.Contains(estimatedMoved, p.PluginProvider())) ||
++		// API-key Claude Code must not count over ordinary HTTP: Packy CC
++		// and similar relays refuse that path.
++		ok && p.UsesClaudeCode() {
+ 		req, err := parseAnthropic(body)
+ 		if err != nil {
+ 			writeError(w, provider.Anthropic, 400, err.Error())
+@@ -2626,6 +2629,13 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
+ 		call.To = provider.Anthropic
+ 		return s.serveClaudeSubscription(w, r, from, p, model, body, &call.Usage)
+ 	}
++	// A custom Anthropic API-key provider may opt in to the same genuine
++	// Claude Code binary. Direct HTTP would not carry Claude Code's client
++	// identity. Off, the default, keeps ordinary HTTP below.
++	if p.UsesClaudeCode() {
++		call.To = provider.Anthropic
++		return s.serveClaudeAPIKey(w, r, from, p, model, body, &call.Usage)
++	}
+ 	// Cursor's through the API its CLI talks to, with the CLI's sign-in
+ 	if p.Account != nil && p.Account.Agent == "cursor" {
+ 		call.To = from
+diff --git a/internal/provider/claude_code_optin_test.go b/internal/provider/claude_code_optin_test.go
+new file mode 100644
+index 00000000..ba704ae6
+--- /dev/null
++++ b/internal/provider/claude_code_optin_test.go
+@@ -0,0 +1,32 @@
++package provider
++
++import "testing"
++
++func TestUsesClaudeCodeOnlyOnAPIKeyProviders(t *testing.T) {
++	p := Provider{ID: "packy-cc", Anthropic: "https://cf.api.fan", Key: "sk-test", ClaudeCode: true}
++	if !p.UsesClaudeCode() {
++		t.Fatal("opt-in API-key provider must use Claude Code")
++	}
++	p.Account = &Account{Agent: "claude", User: "u@example.com"}
++	if p.UsesClaudeCode() {
++		t.Fatal("a signed-in Claude subscription must not take the API-key opt-in")
++	}
++	q := Provider{ID: "relay", Anthropic: "https://cf.api.fan", Key: "sk-test"}
++	if q.UsesClaudeCode() {
++		t.Fatal("default is ordinary HTTP")
++	}
++}
++
++func TestClaudeCodeFlagRoundTrip(t *testing.T) {
++	p := Provider{ID: "packy-cc", Name: "Packy", Anthropic: "https://cf.api.fan", Key: "sk-test", ClaudeCode: true, Models: []string{"claude-haiku-5-5"}}
++	if err := Save(p); err != nil {
++		t.Fatal(err)
++	}
++	got, err := Find("packy-cc")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !got.ClaudeCode || got.Key != "sk-test" || got.Anthropic != "https://cf.api.fan" {
++		t.Fatalf("saved: %+v", got)
++	}
++}
+diff --git a/internal/provider/provider.go b/internal/provider/provider.go
+index d1f13f5a..33329296 100644
+--- a/internal/provider/provider.go
++++ b/internal/provider/provider.go
+@@ -135,6 +135,12 @@ type Provider struct {
+ 	// allowance is spent first (#524). Empty, it is the first.
+ 	KeepLoginAs string `json:"keepLoginAs,omitempty"`
+ 
++	// ClaudeCode, on a custom Anthropic API-key provider, sends its
++	// requests through the genuine Claude Code binary instead of HTTP.
++	// Off, the default, keeps ordinary HTTP. A signed-in Claude
++	// subscription ignores it (see UsesClaudeCode).
++	ClaudeCode bool `json:"claudeCode,omitempty"`
++
+ 	// MaxConcurrency is how many requests may be out at the vendor at once
+ 	// on each of its keys or accounts (Discord, Lemon: a Codex account is
+ 	// risk-controlled past five or six at once); the rest wait their turn,
+@@ -1291,6 +1297,13 @@ func (p Provider) Ready() bool { return p.Account != nil || p.Key != "" || keyOp
+ // On is whether the provider takes requests: ready, and not switched off.
+ func (p Provider) On() bool { return p.Ready() && !p.Off }
+ 
++// UsesClaudeCode is a custom API-key provider that opted in to the genuine
++// Claude Code binary. A subscription (Account set) never does: it already
++// has its own bridge, and this flag must not fake one.
++func (p Provider) UsesClaudeCode() bool {
++	return p.ClaudeCode && p.Account == nil
++}
++
+ // SetOff switches a provider off, or on again (see Provider.Off). Saving
+ // it brings the model lists written into agents' files up to date.
+ func SetOff(id string, off bool) error {

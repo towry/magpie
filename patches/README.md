@@ -7,7 +7,7 @@
 ## Files
 
 - `series`: patch 施行顺序
-- 当前 series 为空。加入补丁后在此列出文件名与用途。
+- `0001-claude-code-api-key-optin.patch`: custom Anthropic API-key provider 可设 `claudeCode: true`，走 genuine Claude Code 子进程（不伪造订阅 Account，失败不回退 HTTP/OAuth）
 
 ## Rules
 
