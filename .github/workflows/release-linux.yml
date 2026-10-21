@@ -1,17 +1,13 @@
 name: Release Linux CLI
 
 on:
+  push:
+    branches: [deploy]
+    paths:
+      - 'patches/**'
+      - 'scripts/**'
+      - '.github/workflows/release-linux.yml'
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag (e.g. v0.1.1153-packy.1). Leave empty to skip creating a GitHub Release."
-        required: false
-        type: string
-      draft:
-        description: "Create the GitHub Release as a draft"
-        required: false
-        type: boolean
-        default: true
 
 permissions:
   contents: write
@@ -22,6 +18,7 @@ concurrency:
 
 jobs:
   release-linux:
+    if: github.ref == 'refs/heads/deploy'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout patch branch
@@ -102,28 +99,9 @@ jobs:
             dist/VERSION
             dist/BUILDINFO
 
-      - name: Create GitHub Release
-        if: ${{ inputs.tag != '' }}
+      - name: Publish immutable GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
-          DRAFT: ${{ inputs.draft }}
           MAIN_SHA: ${{ steps.base.outputs.main_sha }}
           PATCH_SHA: ${{ steps.base.outputs.patch_sha }}
-        run: |
-          set -euo pipefail
-          notes=$(mktemp)
-          {
-            echo "towry/magpie Linux CLI (patched fork)"
-            echo
-            echo "- source (origin/main): \`$MAIN_SHA\`"
-            echo "- patches (deploy): \`$PATCH_SHA\`"
-            echo "- go: \`$(go version)\`"
-            echo
-            echo "This is not an official yetone/magpie release."
-          } > "$notes"
-          args=(release create "$TAG" dist/magpie-cli-linux-amd64 dist/magpie-cli-linux-arm64 dist/SHA256SUMS dist/VERSION dist/BUILDINFO --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file "$notes" --target "$PATCH_SHA")
-          if [[ "$DRAFT" == "true" ]]; then
-            args+=(--draft)
-          fi
-          gh "${args[@]}"
+        run: bash scripts/publish-linux.sh "$PWD/dist"
