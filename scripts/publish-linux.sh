@@ -48,9 +48,10 @@ fi
 find_release > "$tmp/release.json"
 if [[ ! -s "$tmp/release.json" ]]; then
   notes=$(printf 'towry/magpie Linux CLI (patched fork)\n\n- source (origin/main): %s\n- patches (deploy): %s\n\nThis is not an official yetone/magpie release.' "$MAIN_SHA" "$PATCH_SHA")
-  gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$PATCH_SHA" \
-    --title "$tag" --notes "$notes" --draft --latest=false
-  find_release > "$tmp/release.json"
+  # Use the creation response: the releases list may not show a new draft yet.
+  gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
+    -f tag_name="$tag" -f target_commitish="$PATCH_SHA" -f name="$tag" \
+    -f body="$notes" -F draft=true -F prerelease=false -f make_latest=false > "$tmp/release.json"
 fi
 
 # Validate all existing assets before uploading anything. An interrupted draft
