@@ -1,6 +1,6 @@
 diff --git a/internal/gateway/claude_api_key_test.go b/internal/gateway/claude_api_key_test.go
 new file mode 100644
-index 00000000..4fb4eba3
+index 000000000..4fb4eba34
 --- /dev/null
 +++ b/internal/gateway/claude_api_key_test.go
 @@ -0,0 +1,181 @@
@@ -186,10 +186,10 @@ index 00000000..4fb4eba3
 +	}
 +}
 diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
-index 656d9a86..010df30d 100644
+index 63b7888e5..2886c966c 100644
 --- a/internal/gateway/claude_subscription.go
 +++ b/internal/gateway/claude_subscription.go
-@@ -474,6 +474,16 @@ func claudeBinary() (claudeCLI, error) {
+@@ -589,6 +589,16 @@ func claudeBinary() (claudeCLI, error) {
  	return claudeCLI{}, errors.New("Claude Code is not installed; install it and run `claude auth login`, " + claudecode.InstallHint)
  }
  
@@ -206,7 +206,7 @@ index 656d9a86..010df30d 100644
  func (c claudeCLI) command(ctx context.Context, args ...string) *exec.Cmd {
  	if c.wsl != nil {
  		return c.wsl.Command(ctx, args...)
-@@ -524,7 +534,8 @@ func (c claudeCLI) asRoot(env []string) []string {
+@@ -639,7 +649,8 @@ func (c claudeCLI) asRoot(env []string) []string {
  // claudeEnvVars are the variables magpie sets for a Claude Code run, which
  // one in WSL is handed (wslrun's Env).
  var claudeEnvVars = []string{"ENABLE_CLAUDEAI_MCP_SERVERS", "DISABLE_AUTO_COMPACT", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
@@ -216,7 +216,7 @@ index 656d9a86..010df30d 100644
  
  // env is env for a run in config directory configDir ("" for the account
  // Claude Code is signed in to): for one in WSL, what of it goes in.
-@@ -593,18 +604,26 @@ const claudeMCPPath = "/_magpie/claude-mcp/"
+@@ -743,7 +754,11 @@ const claudeMCPPath = "/_magpie/claude-mcp/"
  // reads its input, and the turn was answered 502 "Claude Code ended"
  // (FrierenF on Discord).
  func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, configDir, owner string, from *savedSession) (*subscriptionRun, <-chan Event, error) {
@@ -226,9 +226,13 @@ index 656d9a86..010df30d 100644
 +
 +func (b *subscriptionBridge) startWith(ctx context.Context, req *Request, model, configDir, owner string, from *savedSession, extraEnv []string) (*subscriptionRun, <-chan Event, error) {
 +	run, events, err := b.startRun(ctx, req, model, configDir, owner, from, extraEnv)
- 	var full *claudeFull
- 	if err != nil && from != nil && !errors.As(err, &full) && ctx.Err() == nil {
+ 	var noStart *tuiNoStart
+ 	if errors.As(err, &noStart) {
+ 		// never tried again as -p (claudeTUIErr)
+@@ -754,14 +769,18 @@ func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, con
+ 	if err != nil && from != nil && !errors.As(err, &full) && !errors.As(err, &refused) && ctx.Err() == nil {
  		log.Printf("claude: Claude Code could not go on from the conversation's saved session (%v); a new one is told the whole conversation", err)
+ 		req.branch = nil
 -		return b.startRun(ctx, req, model, configDir, owner, nil)
 +		return b.startRun(ctx, req, model, configDir, owner, nil, extraEnv)
  	}
@@ -247,15 +251,15 @@ index 656d9a86..010df30d 100644
  	if err != nil {
  		return nil, nil, err
  	}
-@@ -735,6 +754,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model,
- 	if len(req.Safeguards) > 0 {
- 		env = append(env, "ANTHROPIC_BETAS="+req.SafeguardBeta)
+@@ -965,6 +984,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model,
+ 		// theirs to answer for, and the run is -p
+ 		env = append(env, claudetui.TrustEnv+"=1")
  	}
 +	env = append(env, extraEnv...)
  	cmd.Env = binary.env(binary.asRoot(env), configDir)
- 	stdin, err := cmd.StdinPipe()
- 	if err != nil {
-@@ -4032,6 +4052,72 @@ func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request,
+ 	if tui {
+ 		cmd.Env = binary.tuiEnv(cmd.Env, configDir)
+@@ -5325,6 +5345,72 @@ func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request,
  	return s.serveSubscription(w, r, from, "Claude Code", model, owner, body, usage, start)
  }
  
@@ -302,7 +306,7 @@ index 656d9a86..010df30d 100644
 +			return run, events, nil
 +		}
 +		from := s.subscription.unshelve(req, owner)
-+		s.subscription.retire(owner, req.Messages)
++		s.subscription.retire(owner, req)
 +		if req.Effort == "" && autoModeClassifier(req) {
 +			req.Effort = "low"
 +		}
@@ -329,10 +333,10 @@ index 656d9a86..010df30d 100644
  // a run's owner names, as Anthropic says it to Claude Code: its
  // anthropic-ratelimit-unified-* headers, which a Claude Code signed in to
 diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
-index e5646844..9fbd17e1 100644
+index b19da3873..4cddf003b 100644
 --- a/internal/gateway/gateway.go
 +++ b/internal/gateway/gateway.go
-@@ -1305,7 +1305,10 @@ func (s *Server) countOn(w http.ResponseWriter, r *http.Request, p provider.Prov
+@@ -1593,7 +1593,10 @@ func (s *Server) countOn(w http.ResponseWriter, r *http.Request, p provider.Prov
  		// ZCode itself never counts, and zcode.z.ai answers count_tokens
  		// with an error every time: one more request its firewall weighs
  		p.Account.Agent == "zcode") ||
@@ -344,7 +348,7 @@ index e5646844..9fbd17e1 100644
  		req, err := parseAnthropic(body)
  		if err != nil {
  			writeError(w, provider.Anthropic, 400, err.Error())
-@@ -3654,6 +3657,13 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
+@@ -4452,6 +4455,13 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
  		call.To = provider.Anthropic
  		return s.serveClaudeSubscription(w, r, from, p, model, body, &call.Usage)
  	}
@@ -360,7 +364,7 @@ index e5646844..9fbd17e1 100644
  	// the APIs it is served on, with the session's token
 diff --git a/internal/provider/claude_code_optin_test.go b/internal/provider/claude_code_optin_test.go
 new file mode 100644
-index 00000000..ba704ae6
+index 000000000..ba704ae64
 --- /dev/null
 +++ b/internal/provider/claude_code_optin_test.go
 @@ -0,0 +1,32 @@
@@ -397,11 +401,11 @@ index 00000000..ba704ae6
 +	}
 +}
 diff --git a/internal/provider/provider.go b/internal/provider/provider.go
-index 6e8a7bee..d9fa0a81 100644
+index 9e9d8eb19..7721355a5 100644
 --- a/internal/provider/provider.go
 +++ b/internal/provider/provider.go
-@@ -147,6 +147,12 @@ type Provider struct {
- 	// (#1907).
+@@ -163,6 +163,12 @@ type Provider struct {
+ 	// request on them (KeptToAgent; myduso on Discord).
  	SwitchOnly bool `json:"switchOnly,omitempty"`
  
 +	// ClaudeCode, on a custom Anthropic API-key provider, sends its
@@ -413,9 +417,9 @@ index 6e8a7bee..d9fa0a81 100644
  	// MaxConcurrency is how many requests may be out at the vendor at once
  	// on each of its keys or accounts (Discord, Lemon: a Codex account is
  	// risk-controlled past five or six at once); the rest wait their turn,
-@@ -1759,6 +1765,13 @@ func (p Provider) Ready() bool {
- // On is whether the provider takes requests: ready, and not switched off.
- func (p Provider) On() bool { return p.Ready() && !p.Off }
+@@ -2106,6 +2112,13 @@ func (p Provider) KeptToAgent() bool {
+ 	return p.SwitchOnly && p.ID == "claude" && p.Account != nil && p.Account.Agent == "claude"
+ }
  
 +// UsesClaudeCode is a custom API-key provider that opted in to the genuine
 +// Claude Code binary. A subscription (Account set) never does: it already
