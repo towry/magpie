@@ -186,7 +186,7 @@ index 000000000..4fb4eba34
 +	}
 +}
 diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
-index 63b7888e5..2886c966c 100644
+index b7c36296c..570f404ad 100644
 --- a/internal/gateway/claude_subscription.go
 +++ b/internal/gateway/claude_subscription.go
 @@ -589,6 +589,16 @@ func claudeBinary() (claudeCLI, error) {
@@ -206,17 +206,15 @@ index 63b7888e5..2886c966c 100644
  func (c claudeCLI) command(ctx context.Context, args ...string) *exec.Cmd {
  	if c.wsl != nil {
  		return c.wsl.Command(ctx, args...)
-@@ -639,7 +649,8 @@ func (c claudeCLI) asRoot(env []string) []string {
- // claudeEnvVars are the variables magpie sets for a Claude Code run, which
+@@ -640,6 +650,7 @@ func (c claudeCLI) asRoot(env []string) []string {
  // one in WSL is handed (wslrun's Env).
  var claudeEnvVars = []string{"ENABLE_CLAUDEAI_MCP_SERVERS", "DISABLE_AUTO_COMPACT", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
--	"DISABLE_TELEMETRY", "DISABLE_ERROR_REPORTING", "DISABLE_AUTOUPDATER", "ANTHROPIC_BETAS"}
-+	"DISABLE_TELEMETRY", "DISABLE_ERROR_REPORTING", "DISABLE_AUTOUPDATER", "ANTHROPIC_BETAS",
-+	"ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"}
+ 	"DISABLE_TELEMETRY", "DISABLE_ERROR_REPORTING", "DISABLE_AUTOUPDATER", "ANTHROPIC_BETAS",
++	"ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY",
+ 	"CLAUDE_CODE_EXTRA_BODY", "DISABLE_PROMPT_CACHING"}
  
  // env is env for a run in config directory configDir ("" for the account
- // Claude Code is signed in to): for one in WSL, what of it goes in.
-@@ -743,7 +754,11 @@ const claudeMCPPath = "/_magpie/claude-mcp/"
+@@ -744,7 +755,11 @@ const claudeMCPPath = "/_magpie/claude-mcp/"
  // reads its input, and the turn was answered 502 "Claude Code ended"
  // (FrierenF on Discord).
  func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, configDir, owner string, from *savedSession) (*subscriptionRun, <-chan Event, error) {
@@ -229,7 +227,7 @@ index 63b7888e5..2886c966c 100644
  	var noStart *tuiNoStart
  	if errors.As(err, &noStart) {
  		// never tried again as -p (claudeTUIErr)
-@@ -754,14 +769,18 @@ func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, con
+@@ -755,14 +770,18 @@ func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, con
  	if err != nil && from != nil && !errors.As(err, &full) && !errors.As(err, &refused) && ctx.Err() == nil {
  		log.Printf("claude: Claude Code could not go on from the conversation's saved session (%v); a new one is told the whole conversation", err)
  		req.branch = nil
@@ -251,7 +249,7 @@ index 63b7888e5..2886c966c 100644
  	if err != nil {
  		return nil, nil, err
  	}
-@@ -965,6 +984,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model,
+@@ -980,6 +999,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model,
  		// theirs to answer for, and the run is -p
  		env = append(env, claudetui.TrustEnv+"=1")
  	}
@@ -259,7 +257,7 @@ index 63b7888e5..2886c966c 100644
  	cmd.Env = binary.env(binary.asRoot(env), configDir)
  	if tui {
  		cmd.Env = binary.tuiEnv(cmd.Env, configDir)
-@@ -5325,6 +5345,72 @@ func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request,
+@@ -5425,6 +5445,72 @@ func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request,
  	return s.serveSubscription(w, r, from, "Claude Code", model, owner, body, usage, start)
  }
  
