@@ -1,6 +1,121 @@
+diff --git a/internal/claudetui/command.go b/internal/claudetui/command.go
+index 282e947dd31fd290bf097ebacca23d23e947d000..85183c1e5cb0af51d68c7e60564b0f41db8fe1ef 100644
+--- a/internal/claudetui/command.go
++++ b/internal/claudetui/command.go
+@@ -10,6 +10,10 @@ const Command = "claude-tui-helper"
+ // answer in their own Claude Code, and the run ends, saying so.
+ const TrustEnv = "MAGPIE_CLAUDE_TUI_TRUST"
+ 
++// ApproveAPIKeyEnv lets the opt-in API-key bridge approve its configured key
++// when Claude Code asks; it does not approve the first-run safety notes.
++const ApproveAPIKeyEnv = "MAGPIE_CLAUDE_TUI_APPROVE_API_KEY"
++
+ // WSLEnv holds, as JSON (WSL), how to run a Claude Code that is in a WSL
+ // distro: the helper, on Windows, runs wsl.exe in its pseudo console.
+ const WSLEnv = "MAGPIE_CLAUDE_TUI_WSL"
+diff --git a/internal/claudetui/tui.go b/internal/claudetui/tui.go
+index 7b4c174a201ff4724f844f1c30079e8c16bbc452..78ef7990a1a8f812b65655d434bd055f37168add 100644
+--- a/internal/claudetui/tui.go
++++ b/internal/claudetui/tui.go
+@@ -213,7 +213,7 @@ func childEnv(extra ...string) []string {
+ 		case k == "CLAUDECODE", k == "CLAUDE_CODE_ENTRYPOINT", k == "CLAUDE_CODE_CHILD_SESSION",
+ 			k == "CLAUDE_CODE_SESSION_ID", k == "CLAUDE_CODE_SESSION_ATTENDED", k == "CLAUDE_CODE_EXECPATH",
+ 			k == "CLAUDE_PID", k == "CLAUDE_EFFORT", k == "TERM", k == "COLUMNS", k == "LINES",
+-			strings.HasPrefix(k, "CLAUDE_CODE_MESSAGING_"), k == WSLEnv:
++			strings.HasPrefix(k, "CLAUDE_CODE_MESSAGING_"), k == WSLEnv, strings.EqualFold(k, ApproveAPIKeyEnv):
+ 			continue
+ 		case slices.ContainsFunc(extra, func(x string) bool { return strings.HasPrefix(x, k+"=") }):
+ 			continue
+@@ -285,6 +285,9 @@ func (s *shim) clearScreen() {
+ // lastScreen is the end of what Claude Code drew, for an error to say.
+ func (s *shim) lastScreen() string {
+ 	p := strings.Join(strings.Fields(s.plain()), " ")
++	if strings.Contains(p, "Detected a custom API key") && strings.Contains(p, "ANTHROPIC_API_KEY") {
++		return "[API-key confirmation screen redacted]"
++	}
+ 	if len(p) > 600 {
+ 		p = p[len(p)-600:]
+ 	}
+@@ -294,6 +297,8 @@ func (s *shim) lastScreen() string {
+ var (
+ 	trustNo  = regexp.MustCompile(`❯\s*No,\s*exit`)
+ 	trustYes = regexp.MustCompile(`❯\s*Yes,\s*I trust`)
++	keyNo    = regexp.MustCompile(`❯\s*No\s*\(recommended\)`)
++	keyYes   = regexp.MustCompile(`❯\s*Yes(?:\s|$)`)
+ 	// how long a Yes stays drawn before Enter is pressed on it
+ 	trustSettle = 300 * time.Millisecond
+ )
+@@ -327,15 +332,51 @@ func (s *shim) ready() error {
+ 	deadline := time.After(readyWait)
+ 	answered := 0
+ 	var yesAt, downAt time.Time
++	keyAnswered := 0
++	var keyYesAt, keyUpAt time.Time
+ 	for {
+ 		p := s.plain()
++		screen := strings.Join(strings.Fields(p), " ")
++		keyScreen := strings.Contains(screen, "Detected a custom API key in your environment") &&
++			strings.Contains(screen, "ANTHROPIC_API_KEY")
++		keyPrompt := keyScreen && strings.Contains(screen, "Do you want to use this API key?")
+ 		switch {
+ 		case strings.Contains(p, "trust this folder") && os.Getenv(TrustEnv) != "1":
+ 			return errUntrusted
+ 		case signIn.MatchString(p):
+ 			return fmt.Errorf("Claude Code's interactive mode asks to sign in: %s", s.lastScreen())
+-		case firstRun.MatchString(strings.Join(strings.Fields(p), " ")):
++		case firstRun.MatchString(screen):
+ 			return fmt.Errorf("Claude Code's interactive mode shows its first-run notes, its onboarding not done: %s", s.lastScreen())
++		case keyScreen && os.Getenv(ApproveAPIKeyEnv) != "1":
++			return errors.New("Claude Code's interactive mode asks to approve the API key; approve it once or select Bearer authentication if the provider supports it")
++		case keyPrompt && keyAnswered >= 3:
++			return errors.New("Claude Code's interactive mode could not approve the configured API key")
++		case keyPrompt:
++			// As with folder trust, wait for Yes to stay drawn before Enter:
++			// the key sent while the screen is being redrawn can be lost.
++			no, yes := lastAt(keyNo, p), lastAt(keyYes, p)
++			switch {
++			case yes > no:
++				if keyYesAt.IsZero() {
++					keyYesAt = time.Now()
++				}
++				if time.Since(keyYesAt) < trustSettle {
++					break
++				}
++				keyAnswered++
++				keyYesAt = time.Time{}
++				s.clearScreen()
++				_, _ = io.WriteString(s.pty, "\r")
++			case no >= 0:
++				keyYesAt = time.Time{}
++				if time.Since(keyUpAt) >= time.Second {
++					keyUpAt = time.Now()
++					_, _ = io.WriteString(s.pty, "\x1b[A")
++				}
++			}
++		case keyScreen:
++			// The question is still being drawn; don't mistake its selector
++			// for Claude Code's prompt.
+ 		case strings.Contains(p, "trust this folder") && answered < 3:
+ 			// the choice is the last one drawn after ❯, "No, exit" at
+ 			// first. A key sent as the question is first drawn can be lost
+@@ -378,8 +419,14 @@ func (s *shim) ready() error {
+ 		case <-s.changed:
+ 		case <-time.After(200 * time.Millisecond):
+ 		case <-s.exited:
++			if keyScreen {
++				return errors.New("Claude Code ended while asking to approve the API key")
++			}
+ 			return fmt.Errorf("Claude Code ended before it showed its prompt (%v): %s", s.exit, s.lastScreen())
+ 		case <-deadline:
++			if keyScreen {
++				return errors.New("Claude Code did not finish the API-key confirmation in " + readyWait.String())
++			}
+ 			return fmt.Errorf("Claude Code showed no prompt in %s: %s", readyWait, s.lastScreen())
+ 		}
+ 	}
 diff --git a/internal/gateway/claude_api_key_test.go b/internal/gateway/claude_api_key_test.go
 new file mode 100644
-index 000000000..4fb4eba34
+index 0000000000000000000000000000000000000000..4fb4eba3416cd7457565fbb3f34c268d94f5cb3b
 --- /dev/null
 +++ b/internal/gateway/claude_api_key_test.go
 @@ -0,0 +1,181 @@
@@ -186,10 +301,18 @@ index 000000000..4fb4eba34
 +	}
 +}
 diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
-index b7c36296c..570f404ad 100644
+index b7c36296c0a7e2cabb2ca2e9853d4e92576d0ae1..70dd6dc77f27f99c9553e31958bd34f746b89c5e 100644
 --- a/internal/gateway/claude_subscription.go
 +++ b/internal/gateway/claude_subscription.go
-@@ -589,6 +589,16 @@ func claudeBinary() (claudeCLI, error) {
+@@ -45,6 +45,7 @@ import (
+ 	"log"
+ 	"maps"
+ 	"net/http"
++	"net/url"
+ 	"os"
+ 	"os/exec"
+ 	"path"
+@@ -589,6 +590,16 @@ func claudeBinary() (claudeCLI, error) {
  	return claudeCLI{}, errors.New("Claude Code is not installed; install it and run `claude auth login`, " + claudecode.InstallHint)
  }
  
@@ -206,15 +329,15 @@ index b7c36296c..570f404ad 100644
  func (c claudeCLI) command(ctx context.Context, args ...string) *exec.Cmd {
  	if c.wsl != nil {
  		return c.wsl.Command(ctx, args...)
-@@ -640,6 +650,7 @@ func (c claudeCLI) asRoot(env []string) []string {
+@@ -640,6 +651,7 @@ func (c claudeCLI) asRoot(env []string) []string {
  // one in WSL is handed (wslrun's Env).
  var claudeEnvVars = []string{"ENABLE_CLAUDEAI_MCP_SERVERS", "DISABLE_AUTO_COMPACT", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
  	"DISABLE_TELEMETRY", "DISABLE_ERROR_REPORTING", "DISABLE_AUTOUPDATER", "ANTHROPIC_BETAS",
-+	"ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY",
++	"ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
  	"CLAUDE_CODE_EXTRA_BODY", "DISABLE_PROMPT_CACHING"}
  
  // env is env for a run in config directory configDir ("" for the account
-@@ -744,7 +755,11 @@ const claudeMCPPath = "/_magpie/claude-mcp/"
+@@ -744,7 +756,11 @@ const claudeMCPPath = "/_magpie/claude-mcp/"
  // reads its input, and the turn was answered 502 "Claude Code ended"
  // (FrierenF on Discord).
  func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, configDir, owner string, from *savedSession) (*subscriptionRun, <-chan Event, error) {
@@ -227,7 +350,7 @@ index b7c36296c..570f404ad 100644
  	var noStart *tuiNoStart
  	if errors.As(err, &noStart) {
  		// never tried again as -p (claudeTUIErr)
-@@ -755,14 +770,18 @@ func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, con
+@@ -755,14 +771,18 @@ func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, con
  	if err != nil && from != nil && !errors.As(err, &full) && !errors.As(err, &refused) && ctx.Err() == nil {
  		log.Printf("claude: Claude Code could not go on from the conversation's saved session (%v); a new one is told the whole conversation", err)
  		req.branch = nil
@@ -249,7 +372,7 @@ index b7c36296c..570f404ad 100644
  	if err != nil {
  		return nil, nil, err
  	}
-@@ -980,6 +999,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model,
+@@ -980,6 +1000,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model,
  		// theirs to answer for, and the run is -p
  		env = append(env, claudetui.TrustEnv+"=1")
  	}
@@ -257,7 +380,26 @@ index b7c36296c..570f404ad 100644
  	cmd.Env = binary.env(binary.asRoot(env), configDir)
  	if tui {
  		cmd.Env = binary.tuiEnv(cmd.Env, configDir)
-@@ -5425,6 +5445,72 @@ func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request,
+@@ -2779,13 +2800,17 @@ func inClaudeDir(env []string, configDir string) []string {
+ func cleanClaudeEnv(env []string) []string {
+ 	blocked := map[string]bool{
+ 		"ANTHROPIC_BASE_URL": true, "ANTHROPIC_API_KEY": true, "ANTHROPIC_AUTH_TOKEN": true,
+-		"CLAUDECODE": true, "CLAUDE_CODE_ENTRYPOINT": true, "CLAUDE_CODE_SSE_PORT": true,
++		claudetui.ApproveAPIKeyEnv: true,
++		"CLAUDECODE":               true, "CLAUDE_CODE_ENTRYPOINT": true, "CLAUDE_CODE_SSE_PORT": true,
+ 		"CLAUDE_CODE_OAUTH_TOKEN": true, "CLAUDE_CODE_PROMPT_CACHE_TTL": true,
+ 		"CLAUDE_CODE_EXTRA_BODY": true, "ANTHROPIC_BETAS": true,
+ 	}
+ 	out := make([]string, 0, len(env)+3)
+ 	for _, e := range env {
+ 		k, _, _ := strings.Cut(e, "=")
++		if runtime.GOOS == "windows" {
++			k = strings.ToUpper(k) // Windows environment names are case-insensitive
++		}
+ 		if !blocked[k] {
+ 			out = append(out, e)
+ 		}
+@@ -5425,6 +5450,105 @@ func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request,
  	return s.serveSubscription(w, r, from, "Claude Code", model, owner, body, usage, start)
  }
  
@@ -283,6 +425,27 @@ index b7c36296c..570f404ad 100644
 +	return dir, nil
 +}
 +
++// claudeAPIKeyBearer uses the configured Bearer choice only for a third-party
++// Anthropic endpoint. BothAuth's host can be another API's, so classify the
++// actual Anthropic host too, with its port removed.
++func claudeAPIKeyBearer(p provider.Provider) bool {
++	if p.AuthHeader != provider.AuthBearer || p.Account != nil {
++		return false
++	}
++	u, err := url.Parse(strings.TrimSpace(p.Anthropic))
++	if err != nil || u.Scheme == "" || u.Hostname() == "" {
++		return false
++	}
++	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
++	if provider.AzureHost(host) || host == "aiplatform.googleapis.com" ||
++		strings.HasSuffix(host, "-aiplatform.googleapis.com") ||
++		strings.HasPrefix(host, "aiplatform.") && strings.HasSuffix(host, ".rep.googleapis.com") {
++		return false
++	}
++	actual := provider.Provider{Key: p.Key, Anthropic: "https://" + host}
++	return actual.BothAuth()
++}
++
 +func claudeAPIKeyEnv(p provider.Provider) ([]string, error) {
 +	key := strings.TrimSpace(p.Key)
 +	if key == "" {
@@ -292,11 +455,24 @@ index b7c36296c..570f404ad 100644
 +	if base == "" {
 +		return nil, errors.New("Claude Code needs an Anthropic base URL")
 +	}
-+	return []string{"ANTHROPIC_BASE_URL=" + base, "ANTHROPIC_API_KEY=" + key}, nil
++	name := "ANTHROPIC_API_KEY="
++	if claudeAPIKeyBearer(p) {
++		name = "ANTHROPIC_AUTH_TOKEN="
++	}
++	return []string{"ANTHROPIC_BASE_URL=" + base, name + key}, nil
 +}
 +
 +func (s *Server) serveClaudeAPIKey(w http.ResponseWriter, r *http.Request, from provider.Protocol, p provider.Provider, model string, body []byte, usage *Usage) (int, string) {
++	extra, envErr := claudeAPIKeyEnv(p)
 +	owner := claudeAPIKeyOwner(p)
++	if len(extra) > 1 && strings.HasPrefix(extra[1], "ANTHROPIC_AUTH_TOKEN=") {
++		// A run or parked tool call must keep the authentication it began with.
++		// The configuration directory stays the same across this change.
++		owner += "#auth#bearer"
++	} else if len(extra) > 1 && strings.HasPrefix(extra[1], "ANTHROPIC_API_KEY=") {
++		// This bridge was explicitly enabled for the provider's configured key.
++		extra = append(extra, claudetui.ApproveAPIKeyEnv+"=1")
++	}
 +	wire := provider.UpstreamNameIn(wiresOf(r.Context()), p.ID, model)
 +	start := func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error) {
 +		ctx = p.Via(ctx)
@@ -308,12 +484,11 @@ index b7c36296c..570f404ad 100644
 +		if req.Effort == "" && autoModeClassifier(req) {
 +			req.Effort = "low"
 +		}
-+		extra, err := claudeAPIKeyEnv(p)
-+		if err != nil {
++		if envErr != nil {
 +			if from != nil {
 +				from.discard()
 +			}
-+			return nil, nil, err
++			return nil, nil, envErr
 +		}
 +		dir, err := claudeAPIKeyConfigDir(p)
 +		if err != nil {
@@ -331,7 +506,7 @@ index b7c36296c..570f404ad 100644
  // a run's owner names, as Anthropic says it to Claude Code: its
  // anthropic-ratelimit-unified-* headers, which a Claude Code signed in to
 diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
-index b19da3873..4cddf003b 100644
+index b19da387313f6a29f27b4d6da80dcf6e86a4e7be..4cddf003bab5dfc9c11b29c82dbd4d48c3643820 100644
 --- a/internal/gateway/gateway.go
 +++ b/internal/gateway/gateway.go
 @@ -1593,7 +1593,10 @@ func (s *Server) countOn(w http.ResponseWriter, r *http.Request, p provider.Prov
@@ -360,9 +535,92 @@ index b19da3873..4cddf003b 100644
  	// Copilot's Auto (all a Student plan may pick) is asked which model it
  	// picks, as Copilot's clients do, and the request goes to that model on
  	// the APIs it is served on, with the session's token
+diff --git a/internal/gui/providers.go b/internal/gui/providers.go
+index 15952429df93e75e0d99942c5c1f8f15266fca54..158e9e8c146f6e4d33f959f4cb3f06b0094cfa0c 100644
+--- a/internal/gui/providers.go
++++ b/internal/gui/providers.go
+@@ -1430,6 +1430,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+ 			// third-party Anthropic API (provider.Provider.AuthHeader); a
+ 			// save that leaves it out keeps it, one learned too
+ 			AuthHeader *string `json:"authHeader"`
++			// ClaudeCode, for save: a missing value keeps the existing
++			// bridge opt-in; false explicitly turns it off.
++			ClaudeCode *bool `json:"claudeCode"`
+ 			// Test, for test: models to send a request each, in place of
+ 			// one per endpoint
+ 			Test []string `json:"test"`
+@@ -1502,6 +1505,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+ 		if req.AuthHeader != nil {
+ 			in.AuthHeader = *req.AuthHeader
+ 		}
++		if req.ClaudeCode != nil {
++			in.ClaudeCode = *req.ClaudeCode
++		}
+ 		var moved []agent.Move
+ 		switch r.PathValue("action") {
+ 		case "show":
+@@ -1590,6 +1596,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+ 				pr.NativeCompaction = in.NativeCompaction
+ 				pr.PassUserAgent = in.PassUserAgent
+ 				pr.AuthHeader = in.AuthHeader
++				pr.ClaudeCode = in.ClaudeCode
+ 				// and what its editor sets beside them: how requests spread
+ 				// over its keys, how long a conversation stays, the one
+ 				// rate limited to the back, Unlisted and each key's proxy.
+@@ -1730,7 +1737,11 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+ 					}
+ 					in.ID = req.From
+ 				}
+-				old, _ = provider.Find(in.ID)
++				old, err = provider.Find(in.ID)
++				if err != nil && req.ClaudeCode == nil {
++					fail(rw, err)
++					return
++				}
+ 				if req.Proxy != nil {
+ 					in.Proxy = *req.Proxy
+ 				} else if old != nil {
+@@ -1869,6 +1880,27 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+ 				if in.BalanceToken == "" && old != nil && !req.ClearBalanceToken {
+ 					in.BalanceToken = old.BalanceToken
+ 				}
++				if req.ClaudeCode == nil && old != nil && old.ClaudeCode {
++					// The editor fills an omitted or unavailable BaseAPI from the
++					// first address it shows, even when the user changed nothing.
++					apis := map[string]string{"chat": old.Chat, "anthropic": old.Anthropic,
++						"responses": old.Responses, "gemini": old.Gemini, "decide": old.Decide}
++					wasAPI := old.BaseAPI
++					if apis[wasAPI] == "" {
++						wasAPI = "chat"
++						for _, api := range []string{"chat", "anthropic", "responses", "gemini", "decide"} {
++							if apis[api] != "" {
++								wasAPI = api
++								break
++							}
++						}
++					}
++					if in.Chat != old.Chat || in.Responses != old.Responses || in.Anthropic != old.Anthropic ||
++						in.Gemini != old.Gemini || in.Decide != old.Decide || in.BaseAPI != "" && in.BaseAPI != wasAPI {
++						fail(rw, errors.New("changing a Claude Code provider's APIs requires an explicit claudeCode setting"))
++						return
++					}
++				}
+ 				if old != nil {
+ 					// the other keys are kept apart, in the Accounts list
+ 					in.Keys = old.Keys
+@@ -1888,6 +1920,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+ 					if req.AuthHeader == nil {
+ 						in.AuthHeader = old.AuthHeader
+ 					}
++					if req.ClaudeCode == nil {
++						in.ClaudeCode = old.ClaudeCode
++					}
+ 					// its list's schedule and rules are set on their own, from
+ 					// the CLI (#2135)
+ 					in.RefreshEvery, in.AutoInclude = old.RefreshEvery, old.AutoInclude
 diff --git a/internal/provider/claude_code_optin_test.go b/internal/provider/claude_code_optin_test.go
 new file mode 100644
-index 000000000..ba704ae64
+index 0000000000000000000000000000000000000000..ba704ae647e98eff8772b4bb18f7f6468506b961
 --- /dev/null
 +++ b/internal/provider/claude_code_optin_test.go
 @@ -0,0 +1,32 @@
@@ -399,7 +657,7 @@ index 000000000..ba704ae64
 +	}
 +}
 diff --git a/internal/provider/provider.go b/internal/provider/provider.go
-index 9e9d8eb19..7721355a5 100644
+index 9e9d8eb1921a84d7e9b2edf064b748c0e9645bac..7721355a5773bcffa48bd6a11047e34e857a1cf0 100644
 --- a/internal/provider/provider.go
 +++ b/internal/provider/provider.go
 @@ -163,6 +163,12 @@ type Provider struct {
