@@ -7,7 +7,7 @@
 ## Files
 
 - `series`: patch 施行顺序
-- `0001-claude-code-api-key-optin.patch`: custom Anthropic API-key provider 可设置 `claudeCode: true`，通过 genuine Claude Code 子进程处理请求（不伪造订阅 Account，失败不回退 HTTP/OAuth）。仅第三方 Anthropic provider 的 `authHeader` 为 `"bearer"` 时使用 `ANTHROPIC_AUTH_TOKEN`；选择 Bearer 前必须确认服务支持。默认及 `x-api-key` 仍使用 `ANTHROPIC_API_KEY`，bridge 会自动确认使用该 provider 配置的 key；首次安全提示仍需要用户完成。
+- `0001-claude-code-api-key-optin.patch`: custom Anthropic API-key provider 可设置 `claudeCode: true`，通过 genuine Claude Code 子进程处理请求（不伪造订阅 Account，失败不回退 HTTP/OAuth）。仅第三方 Anthropic provider 的 `authHeader` 为 `"bearer"` 时使用 `ANTHROPIC_AUTH_TOKEN`；选择 Bearer 前必须确认服务支持。默认及 `x-api-key` 仍使用 `ANTHROPIC_API_KEY`，bridge 会自动确认使用该 provider 配置的 key；首次启动沿用上游 TUI 的 onboarding 处理，不代答账号登录。
   界面保存会保留原有 `claudeCode` 设置；修改 API 地址或协议时必须显式指定该设置，复制 provider 不会继承它。
 
 ## Rules
