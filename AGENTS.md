@@ -22,8 +22,8 @@ CI (`.github/workflows/check-patches.yml`) checks out the patch branch, detaches
 
 Resolve:
 
-1. `git fetch origin main` and record `git rev-parse origin/main`.
-2. If `../magpie-main` exists and is this repo's `origin/main` → use it.
+1. Before source analysis or checking or creating patches, run `git fetch origin main` in the source worktree and record `git rev-parse origin/main`. First confirm that the worktree belongs to this repository; if it does not exist yet, fetch from this repository first.
+2. If `../magpie-main` exists and belongs to this repository, check that it is clean and its detached HEAD matches the fetched `origin/main`. If clean but not detached at that SHA, run `git -C ../magpie-main switch --detach origin/main`. If it has local changes, stop and report them without overwriting them. Use this worktree.
 3. Else if `./magpie-main` exists and is this repo's `origin/main` → use it.
 4. Else create the sibling worktree: `git worktree add --detach ../magpie-main origin/main`.
 5. Say which path and which `origin/main` SHA you used.
