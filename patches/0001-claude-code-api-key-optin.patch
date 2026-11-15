@@ -1,8 +1,8 @@
 diff --git a/docs/subsystems/claude-subscription-bridge.md b/docs/subsystems/claude-subscription-bridge.md
-index ca6f9302..3867914a 100644
+index edbed956..fb7de796 100644
 --- a/docs/subsystems/claude-subscription-bridge.md
 +++ b/docs/subsystems/claude-subscription-bridge.md
-@@ -421,11 +421,15 @@ the refused turn nothing, so the `-p` run is its only answer; a turn that
+@@ -422,11 +422,15 @@ the refused turn nothing, so the `-p` run is its only answer; a turn that
  would draw from extra usage would have been served, not refused. The
  prompt's fingerprint (`thirdPartyKey`: its first 2KB, the agent's own part
  before Pi's working directory) is kept on the bridge for 12 hours
@@ -20,8 +20,8 @@ index ca6f9302..3867914a 100644
 -`claude_tui_refusal_test.go` holds each case.
 +`claude_tui_refusal_test.go` holds the subscription retry cases.
  
- The other exception is Claude Code's auto mode classifier when its own
- cache marks keep a long transcript (#5585, #5655; `keptByPrint`,
+ A second exception is a turn whose message the interactive mode didn't
+ take (ok123now on X: magpie v0.1.3901, Windows 10 LTSC 21H2, Claude Code
 diff --git a/internal/claudetui/command.go b/internal/claudetui/command.go
 index 6175fcfd..7ecee5f8 100644
 --- a/internal/claudetui/command.go
@@ -38,10 +38,10 @@ index 6175fcfd..7ecee5f8 100644
  // (a /usage read, a test's "hi") stops waiting for it. The helper ends
  // then on its own, saying on its stderr what Claude Code hadn't done and
 diff --git a/internal/claudetui/tui.go b/internal/claudetui/tui.go
-index 93b03891..6a829a1e 100644
+index 16bb1420..e813f5d4 100644
 --- a/internal/claudetui/tui.go
 +++ b/internal/claudetui/tui.go
-@@ -260,7 +260,7 @@ func childEnv(extra ...string) []string {
+@@ -267,7 +267,7 @@ func childEnv(extra ...string) []string {
  		case k == "CLAUDECODE", k == "CLAUDE_CODE_ENTRYPOINT", k == "CLAUDE_CODE_CHILD_SESSION",
  			k == "CLAUDE_CODE_SESSION_ID", k == "CLAUDE_CODE_SESSION_ATTENDED", k == "CLAUDE_CODE_EXECPATH",
  			k == "CLAUDE_PID", k == "CLAUDE_EFFORT", k == "TERM", k == "COLUMNS", k == "LINES",
@@ -50,7 +50,7 @@ index 93b03891..6a829a1e 100644
  			continue
  		case slices.ContainsFunc(extra, func(x string) bool { return strings.HasPrefix(x, k+"=") }):
  			continue
-@@ -455,6 +455,9 @@ func (s *shim) lastScreen() string {
+@@ -472,6 +472,9 @@ func (s *shim) lastScreen() string {
  		}
  		return why
  	}
@@ -60,7 +60,7 @@ index 93b03891..6a829a1e 100644
  	if len(p) > 600 {
  		p = p[len(p)-600:]
  		for i := 0; i < len(p) && i < utf8.UTFMax && !utf8.RuneStart(p[0]); i++ {
-@@ -470,6 +473,8 @@ var (
+@@ -487,6 +490,8 @@ var (
  	// the Bypass Permissions disclaimer's Yes (#5042): the disclaimer
  	// pairs the same "No, exit" with it as the trust question does
  	bypassYes = lazyre.New(`❯\s*Yes,\s*I accept`)
@@ -69,7 +69,7 @@ index 93b03891..6a829a1e 100644
  	// how long a Yes stays drawn before Enter is pressed on it
  	trustSettle = 300 * time.Millisecond
  )
-@@ -541,6 +546,8 @@ func (s *shim) ready() error {
+@@ -558,6 +563,8 @@ func (s *shim) ready() error {
  	answered := 0
  	prompted := false
  	var yesAt, downAt time.Time
@@ -78,7 +78,7 @@ index 93b03891..6a829a1e 100644
  	// an onboarding screen is answered once it has stayed drawn
  	// trustSettle: a key sent as it is first drawn can be lost to its
  	// being drawn again, and nothing then draws it once more
-@@ -579,6 +586,9 @@ func (s *shim) ready() error {
+@@ -596,6 +603,9 @@ func (s *shim) ready() error {
  		// drawn since a key is nothing until the next screen is drawn
  		now, _ := s.looks()
  		nowWords := strings.Join(strings.Fields(now+" "+p), " ")
@@ -88,7 +88,7 @@ index 93b03891..6a829a1e 100644
  		doing := "showed no prompt"
  		if strings.Contains(nowWords, "trust this folder") {
  			doing = asking
-@@ -603,6 +613,36 @@ func (s *shim) ready() error {
+@@ -620,6 +630,36 @@ func (s *shim) ready() error {
  			if err := onboard("terminal", "\x1b"); err != nil {
  				return err
  			}
@@ -125,7 +125,7 @@ index 93b03891..6a829a1e 100644
  		case (strings.Contains(p, "trust this folder") || strings.Contains(words, "Bypass Permissions mode")) && answered < 3:
  			// the choice is the last one drawn after ❯, "No, exit" at
  			// first. A key sent as the question is first drawn can be lost
-@@ -662,8 +702,14 @@ func (s *shim) ready() error {
+@@ -679,8 +719,14 @@ func (s *shim) ready() error {
  		case <-s.changed:
  		case <-time.After(200 * time.Millisecond):
  		case <-s.exited:
@@ -328,10 +328,10 @@ index 00000000..4fb4eba3
 +	}
 +}
 diff --git a/internal/gateway/claude_subscription.go b/internal/gateway/claude_subscription.go
-index 3c446d7e..7665dd3d 100644
+index 8c2dcd83..550ec5ca 100644
 --- a/internal/gateway/claude_subscription.go
 +++ b/internal/gateway/claude_subscription.go
-@@ -45,6 +45,7 @@ import (
+@@ -46,6 +46,7 @@ import (
  	"log"
  	"maps"
  	"net/http"
@@ -339,7 +339,7 @@ index 3c446d7e..7665dd3d 100644
  	"os"
  	"os/exec"
  	"path"
-@@ -731,6 +732,16 @@ func claudeBinary() (claudeCLI, error) {
+@@ -752,6 +753,16 @@ func claudeBinary() (claudeCLI, error) {
  	return claudeCLI{}, errors.New("Claude Code is not installed; install it and run `claude auth login`, " + claudecode.InstallHint)
  }
  
@@ -356,7 +356,7 @@ index 3c446d7e..7665dd3d 100644
  func (c claudeCLI) command(ctx context.Context, args ...string) *exec.Cmd {
  	if c.wsl != nil {
  		return c.wsl.Command(ctx, args...)
-@@ -782,6 +793,7 @@ func (c claudeCLI) asRoot(env []string) []string {
+@@ -803,6 +814,7 @@ func (c claudeCLI) asRoot(env []string) []string {
  // one in WSL is handed (wslrun's Env).
  var claudeEnvVars = []string{"ENABLE_CLAUDEAI_MCP_SERVERS", "DISABLE_AUTO_COMPACT", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
  	"DISABLE_TELEMETRY", "DO_NOT_TRACK", "DISABLE_ERROR_REPORTING", "DISABLE_AUTOUPDATER", "ANTHROPIC_BETAS",
@@ -364,7 +364,7 @@ index 3c446d7e..7665dd3d 100644
  	"CLAUDE_CODE_EXTRA_BODY", "DISABLE_PROMPT_CACHING"}
  
  // env is env for a run in config directory configDir ("" for the account
-@@ -887,7 +899,11 @@ const claudeMCPPath = "/_magpie/claude-mcp/"
+@@ -908,7 +920,11 @@ const claudeMCPPath = "/_magpie/claude-mcp/"
  // reads its input, and the turn was answered 502 "Claude Code ended"
  // (FrierenF on Discord).
  func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, configDir, owner string, from *savedSession) (*subscriptionRun, <-chan Event, error) {
@@ -377,7 +377,7 @@ index 3c446d7e..7665dd3d 100644
  	var noStart *tuiNoStart
  	if errors.As(err, &noStart) {
  		// never tried again as -p (claudeTUIErr)
-@@ -899,7 +915,7 @@ func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, con
+@@ -920,7 +936,7 @@ func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, con
  	if err != nil && (from != nil || req.replayed) && !errors.As(err, &full) && !errors.As(err, &refused) && !errors.As(err, &tui) && ctx.Err() == nil {
  		log.Printf("claude: Claude Code could not go on from the conversation's saved session (%v); a new one is told the whole conversation", err)
  		req.branch, req.told = nil, true
@@ -386,7 +386,7 @@ index 3c446d7e..7665dd3d 100644
  	}
  	return run, events, err
  }
-@@ -909,8 +925,8 @@ func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, con
+@@ -930,8 +946,8 @@ func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, con
  // only they answer: told the caller's folder (envElsewhere), the turn is
  // answered. It was a 502, which a Claude Code client asks again and
  // again, so the turn hung (lwjef on X).
@@ -397,7 +397,7 @@ index 3c446d7e..7665dd3d 100644
  	var untrusted *tuiUntrusted
  	if !errors.As(err, &untrusted) || ctx.Err() != nil {
  		return run, events, err
-@@ -922,7 +938,7 @@ func (b *subscriptionBridge) startTrusted(ctx context.Context, req *Request, mod
+@@ -943,7 +959,7 @@ func (b *subscriptionBridge) startTrusted(ctx context.Context, req *Request, mod
  	// folder (sleepy_shibe on Discord)
  	b.untrusted.Store(untrusted.key, time.Now())
  	log.Printf("claude: Claude Code asks whether to trust %s, which its user hasn't; the run goes in magpie's own folder, told the caller's", untrusted.dir)
@@ -406,7 +406,7 @@ index 3c446d7e..7665dd3d 100644
  }
  
  // untrustedHere is whether a run in the caller's folder work goes in
-@@ -957,8 +973,12 @@ func (b *subscriptionBridge) untrustedHere(req *Request, binary claudeCLI, confi
+@@ -978,8 +994,12 @@ func (b *subscriptionBridge) untrustedHere(req *Request, binary claudeCLI, confi
  }
  
  // startRun is start's Claude Code, from the saved session from when set.
@@ -421,7 +421,7 @@ index 3c446d7e..7665dd3d 100644
  	if err != nil {
  		return nil, nil, err
  	}
-@@ -1262,6 +1282,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model,
+@@ -1303,6 +1323,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model,
  		// a saved account's run in magpie's folder is never asked (#4830)
  		trustWork(binary, configDir, work)
  	}
@@ -429,7 +429,7 @@ index 3c446d7e..7665dd3d 100644
  	cmd.Env = binary.env(binary.asRoot(env), configDir)
  	if tui {
  		cmd.Env = binary.tuiEnv(cmd.Env, configDir)
-@@ -3724,13 +3745,17 @@ func cleanClaudeEnv(env []string) []string {
+@@ -3944,13 +3965,17 @@ func cleanClaudeEnv(env []string) []string {
  func cleanClaudeEnvTTL(env []string, ttl string) []string {
  	blocked := map[string]bool{
  		"ANTHROPIC_BASE_URL": true, "ANTHROPIC_API_KEY": true, "ANTHROPIC_AUTH_TOKEN": true,
@@ -448,7 +448,7 @@ index 3c446d7e..7665dd3d 100644
  		if !blocked[k] {
  			out = append(out, e)
  		}
-@@ -6785,6 +6810,113 @@ func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request,
+@@ -7050,6 +7075,113 @@ func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request,
  	return s.serveSubscription(w, r, from, "Claude Code", model, owner, body, usage, start)
  }
  
@@ -556,56 +556,65 @@ index 3c446d7e..7665dd3d 100644
 +		}
 +		return s.subscription.startWith(ctx, req, wire, dir, owner, from, extra)
 +	}
-+	return s.serveSubscriptionAs(w, r, from, "Claude Code", model, owner, body, usage, start, false, owner)
++	return s.serveSubscriptionAs(w, r, from, "Claude Code", model, owner, body, usage, start, "", owner)
 +}
 +
  // limitHeaders says on a reply what is kept of the allowance of the account
  // a run's owner names, as Anthropic says it to Claude Code: its
  // anthropic-ratelimit-unified-* headers, which a Claude Code signed in to
-@@ -6825,14 +6957,15 @@ var ratelimitWindows = map[string]string{
+@@ -7090,15 +7222,16 @@ var ratelimitWindows = map[string]string{
  // on them.
  func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from provider.Protocol, name, model, owner string, body []byte, usage *Usage,
  	start func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error)) (int, string) {
--	return s.serveSubscriptionAs(w, r, from, name, model, owner, body, usage, start, false)
-+	return s.serveSubscriptionAs(w, r, from, name, model, owner, body, usage, start, false, "")
+-	return s.serveSubscriptionAs(w, r, from, name, model, owner, body, usage, start, "")
++	return s.serveSubscriptionAs(w, r, from, name, model, owner, body, usage, start, "", "")
  }
  
- // serveSubscriptionAs is serveSubscription, asPrint for the turn asked
- // again as claude -p after the interactive mode's run was refused as a
--// third-party app's with nothing of the reply said (redoAsPrint).
-+// third-party app's with nothing of the reply said (redoAsPrint). API-key
-+// providers scope refusal decisions to their owner; subscriptions share them.
+ // serveSubscriptionAs is serveSubscription, redo the code of a turn asked
+ // again as claude -p after the interactive mode's run failed with nothing
+ // of the reply said (redoAsPrint): thirdPartyCode, refused as a
+ // third-party app's, or unpastedCode, its message not taken there.
++// API-key providers scope refusal decisions to their owner; subscriptions share them.
  func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, from provider.Protocol, name, model, owner string, body []byte, usage *Usage,
--	start func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error), asPrint bool) (int, string) {
-+	start func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error), asPrint bool, refusalScope string) (int, string) {
+-	start func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error), redo string) (int, string) {
++	start func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error), redo, refusalScope string) (int, string) {
  	var req *Request
  	var err error
  	if name == "Claude Code" && wantsClientCache(r, from) {
-@@ -6895,7 +7028,7 @@ func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, fro
+@@ -7161,7 +7294,7 @@ func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, fro
  	// interactive mode as a third-party app's runs as claude -p, which is
  	// served it: asked again after the refusal, or of a prompt refused
  	// within thirdPartyFor (#4503)
--	if name == "Claude Code" && claudeTUIOn() && (asPrint || s.subscription.tuiRefused(req)) {
-+	if name == "Claude Code" && claudeTUIOn() && (asPrint || s.subscription.tuiRefused(req, refusalScope)) {
+-	if name == "Claude Code" && claudeTUIOn() && (redo == thirdPartyCode || s.subscription.tuiRefused(req)) {
++	if name == "Claude Code" && claudeTUIOn() && (redo == thirdPartyCode || s.subscription.tuiRefused(req, refusalScope)) {
  		req.tuiRefused = true
  		if req.clientCache != nil {
  			req.clientCache.print = true
-@@ -7115,12 +7248,12 @@ func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, fro
+@@ -7404,7 +7537,7 @@ func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, fro
  		run.ended(req, said, stop, ok)
  	})
- 	if req.interactive && strings.Contains(msg, thirdPartyWords) {
+ 	if req.interactive && thirdPartyIn(msg) {
 -		s.subscription.refusedTUI(req)
 +		s.subscription.refusedTUI(req, refusalScope)
+ 	}
+ 	if req.interactive && strings.Contains(msg, claudetui.ImageNotTaken) {
+ 		s.subscription.unpasted.Store(time.Now().UnixNano())
+@@ -7412,12 +7545,12 @@ func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, fro
+ 	if code == redoAsPrint && unpastedSaid(name, msg) {
+ 		gone()
+ 		log.Printf("claude: the interactive mode didn't take a turn's message on %s, with nothing of the reply said: asked again as claude -p, which the plan counts at about twice the interactive mode's, with none of its cache (%.200s)", req.Model, msg)
+-		return s.serveSubscriptionAs(w, r, from, name, model, owner, body, usage, start, unpastedCode)
++		return s.serveSubscriptionAs(w, r, from, name, model, owner, body, usage, start, unpastedCode, refusalScope)
  	}
  	if code == redoAsPrint {
  		gone()
  		log.Printf("claude: Anthropic refused an interactive-mode turn on %s as a third-party app's, with nothing of the reply said: asked again as claude -p (#4503)", req.Model)
--		return s.serveSubscriptionAs(w, r, from, name, model, owner, body, usage, start, true)
-+		return s.serveSubscriptionAs(w, r, from, name, model, owner, body, usage, start, true, refusalScope)
+-		return s.serveSubscriptionAs(w, r, from, name, model, owner, body, usage, start, thirdPartyCode)
++		return s.serveSubscriptionAs(w, r, from, name, model, owner, body, usage, start, thirdPartyCode, refusalScope)
  	}
  	return code, msg
  }
-@@ -7245,9 +7378,9 @@ const thirdPartyFor = 12 * time.Hour
+@@ -7588,9 +7721,9 @@ const thirdPartyFor = 12 * time.Hour
  const thirdPartyKeyLen = 2048
  
  // thirdPartyKey is req's agent's system prompt's fingerprint, "" when it
@@ -618,7 +627,7 @@ index 3c446d7e..7665dd3d 100644
  	sys := strings.TrimSpace(withoutBillingHeader(req.System))
  	if sys == "" {
  		return ""
-@@ -7256,13 +7389,13 @@ func thirdPartyKey(req *Request) string {
+@@ -7599,13 +7732,13 @@ func thirdPartyKey(req *Request) string {
  		sys = sys[:thirdPartyKeyLen]
  	}
  	sum := sha256.Sum256([]byte(sys))
@@ -635,7 +644,7 @@ index 3c446d7e..7665dd3d 100644
  	if key == "" {
  		return
  	}
-@@ -7278,8 +7411,8 @@ func (b *subscriptionBridge) refusedTUI(req *Request) {
+@@ -7621,8 +7754,8 @@ func (b *subscriptionBridge) refusedTUI(req *Request) {
  
  // tuiRefused is whether Anthropic refused req's agent's prompt in the
  // interactive mode within thirdPartyFor.
@@ -647,10 +656,10 @@ index 3c446d7e..7665dd3d 100644
  		return false
  	}
 diff --git a/internal/gateway/gateway.go b/internal/gateway/gateway.go
-index 47a076b2..bbf8d269 100644
+index 3d781084..9c7f7035 100644
 --- a/internal/gateway/gateway.go
 +++ b/internal/gateway/gateway.go
-@@ -1991,7 +1991,10 @@ func (s *Server) countOn(w http.ResponseWriter, r *http.Request, p provider.Prov
+@@ -2154,7 +2154,10 @@ func (s *Server) countOn(w http.ResponseWriter, r *http.Request, p provider.Prov
  		// ZCode itself never counts, and zcode.z.ai answers count_tokens
  		// with an error every time: one more request its firewall weighs
  		p.Account.Agent == "zcode") ||
@@ -662,7 +671,7 @@ index 47a076b2..bbf8d269 100644
  		req, err := parseAnthropic(body)
  		if err != nil {
  			writeError(w, provider.Anthropic, 400, err.Error())
-@@ -5518,6 +5521,13 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
+@@ -5778,6 +5781,13 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
  		call.To = provider.Anthropic
  		return s.serveClaudeSubscription(w, r, from, p, model, body, &call.Usage)
  	}
@@ -677,10 +686,10 @@ index 47a076b2..bbf8d269 100644
  	// picks, as Copilot's clients do, and the request goes to that model on
  	// the APIs it is served on, with the session's token
 diff --git a/internal/gui/providers.go b/internal/gui/providers.go
-index 3fd9d4ee..5a28f4a2 100644
+index c58f8798..da22a23f 100644
 --- a/internal/gui/providers.go
 +++ b/internal/gui/providers.go
-@@ -1743,6 +1743,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+@@ -2003,6 +2003,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
  			// third-party Anthropic API (provider.Provider.AuthHeader); a
  			// save that leaves it out keeps it, one learned too
  			AuthHeader *string `json:"authHeader"`
@@ -690,7 +699,7 @@ index 3fd9d4ee..5a28f4a2 100644
  			// Test, for test: models to send a request each, in place of
  			// one per endpoint
  			Test []string `json:"test"`
-@@ -1853,6 +1856,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+@@ -2116,6 +2119,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
  		if req.AuthHeader != nil {
  			in.AuthHeader = *req.AuthHeader
  		}
@@ -700,7 +709,7 @@ index 3fd9d4ee..5a28f4a2 100644
  		var moved []agent.Move
  		switch r.PathValue("action") {
  		case "show":
-@@ -1944,6 +1950,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+@@ -2207,6 +2213,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
  				pr.NativeCompaction = in.NativeCompaction
  				pr.MagpieUserAgent = in.MagpieUserAgent
  				pr.AuthHeader = in.AuthHeader
@@ -708,7 +717,7 @@ index 3fd9d4ee..5a28f4a2 100644
  				// and what its editor sets beside them: how requests spread
  				// over its keys, how long a conversation stays, the one
  				// rate limited to the back, Unlisted and each key's proxy.
-@@ -2107,7 +2114,11 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+@@ -2381,7 +2388,11 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
  					}
  					in.ID = req.From
  				}
@@ -721,7 +730,7 @@ index 3fd9d4ee..5a28f4a2 100644
  				if req.Proxy != nil {
  					in.Proxy = *req.Proxy
  				} else if old != nil {
-@@ -2291,6 +2302,27 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+@@ -2573,6 +2584,27 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
  				if in.BalanceToken == "" && old != nil && !req.ClearBalanceToken {
  					in.BalanceToken = old.BalanceToken
  				}
@@ -749,7 +758,7 @@ index 3fd9d4ee..5a28f4a2 100644
  				if old != nil {
  					// the other keys are kept apart, in the Accounts list
  					in.Keys = old.Keys
-@@ -2313,6 +2345,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
+@@ -2595,6 +2627,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
  					if req.AuthHeader == nil {
  						in.AuthHeader = old.AuthHeader
  					}
@@ -798,12 +807,12 @@ index 00000000..ba704ae6
 +	}
 +}
 diff --git a/internal/provider/provider.go b/internal/provider/provider.go
-index d0f6d55b..b31cdfef 100644
+index 5c1fcc8e..710b7e78 100644
 --- a/internal/provider/provider.go
 +++ b/internal/provider/provider.go
-@@ -206,6 +206,12 @@ type Provider struct {
- 	// magpie that is not that one (hanslin1666 on Discord).
- 	KeepSelf bool `json:"keepSelf,omitempty"`
+@@ -212,6 +212,12 @@ type Provider struct {
+ 	// removes it. For a local model that exists only here (treydtw on X).
+ 	ThisDevice bool `json:"thisDevice,omitempty"`
  
 +	// ClaudeCode, on a custom Anthropic API-key provider, sends its
 +	// requests through the genuine Claude Code binary instead of HTTP.
@@ -814,7 +823,7 @@ index d0f6d55b..b31cdfef 100644
  	// MaxConcurrency is how many requests may be out at the vendor at once
  	// on each of its keys or accounts (Discord, Lemon: a Codex account is
  	// risk-controlled past five or six at once); the rest wait their turn,
-@@ -2488,6 +2494,13 @@ func (p Provider) KeptToAgent() bool {
+@@ -2596,6 +2602,13 @@ func (p Provider) KeptToAgent() bool {
  	return p.SwitchOnly && p.ID == "claude" && p.Account != nil && p.Account.Agent == "claude"
  }
  
