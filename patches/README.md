@@ -9,6 +9,7 @@
 - `series`: patch 施行顺序
 - `0001-claude-code-api-key-optin.patch`: custom Anthropic API-key provider 可设置 `claudeCode: true`，通过 genuine Claude Code 子进程处理请求（不伪造订阅 Account，失败不回退 HTTP/OAuth）。仅第三方 Anthropic provider 的 `authHeader` 为 `"bearer"` 时使用 `ANTHROPIC_AUTH_TOKEN`；选择 Bearer 前必须确认服务支持。默认及 `x-api-key` 仍使用 `ANTHROPIC_API_KEY`，bridge 会自动确认使用该 provider 配置的 key；首次启动沿用上游 TUI 的 onboarding 处理，不代答账号登录。
   界面保存会保留原有 `claudeCode` 设置；修改 API 地址或协议时必须显式指定该设置，复制 provider 不会继承它。
+- `0002-memory-sized-body-room.patch`: 大请求入站预算仍按可用内存的 1/32 计算，最低值由 64 MiB 改为已有的 1 MiB 计数门槛，避免小内存服务同时解析过多大请求；保留超预算请求独占运行、小请求免计数、取消及排队超时行为。不限制插件子进程数，运行部署仍须另设进程池和 provider 并发。
 
 ## Rules
 

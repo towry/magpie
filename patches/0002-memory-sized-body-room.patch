@@ -1,0 +1,34 @@
+diff --git a/docs/subsystems/gateway-routing.md b/docs/subsystems/gateway-routing.md
+index df54987b..6c11ed32 100644
+--- a/docs/subsystems/gateway-routing.md
++++ b/docs/subsystems/gateway-routing.md
+@@ -511,7 +511,12 @@ recorded as a prediction failure (`noPrediction`).
+   description (`seenBody`), Codex's auto reset (`autoReset`), plugins'
+   gateway hooks (`GatewayBegin`) and JS gateway middleware, and every
+   `notePhase` (slot, rpm, upstream, redact), and the body room's queue
+-  (`bodyRoom.take`, at most `bodyRoomWait`, 100s). Each is named (its
++  (`bodyRoom.take`, at most `bodyRoomWait`, 100s). The room is a
++  thirty-second of the memory limit, with a floor of `bodyRoomFree`
++  (1 MiB), not 64 MiB: on a service limited below 2 GiB the old floor
++  admitted more large bodies than that share. A body larger than the
++  room still runs alone; smaller-than-1-MiB bodies remain uncounted
++  ([`body_room.go`](../../internal/gateway/body_room.go)). Each wait is named (its
+   `kind`), and the time spent in each kind is kept (`waitKind`) for the
+   report below. What is left is magpie's own work
+   (the catalog, parsing, planning, reading the usage log), ~8.5s at its
+diff --git a/internal/gateway/body_room.go b/internal/gateway/body_room.go
+index 6c98b78c..dbe03fa8 100644
+--- a/internal/gateway/body_room.go
++++ b/internal/gateway/body_room.go
+@@ -53,8 +53,9 @@ const bodyRoomFree = 1 << 20
+ // (noteWait), so the answer says why.
+ var bodyRoomWait = 100 * time.Second
+ 
+-// bodyRoomFloor is the least room, however small the machine.
+-const bodyRoomFloor = 64 << 20
++// bodyRoomFloor keeps the room positive and no smaller than a counted
++// body. Larger bodies can still run alone, even on a small machine.
++const bodyRoomFloor = bodyRoomFree
+ 
+ // bodyRoomSize is a thirty-second of what magpie's processes may use
+ // (memLimit on Linux, the computer's memory elsewhere), bodyRoomFloor at

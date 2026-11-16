@@ -1,3 +1,4 @@
 # Apply order. One filename per line.
 # Blank lines and # comments are skipped.
 0001-claude-code-api-key-optin.patch
+0002-memory-sized-body-room.patch
